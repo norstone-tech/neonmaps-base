@@ -2,6 +2,7 @@
 	"main": "index.js",
 	"dependencies": {
 		"pbf": "^3.2.1",
-		"protocol-buffers-schema": "^3.5.1"
+		"protocol-buffers-schema": "^3.5.1",
+		"commander": "^7.2.0"
 	}
 }

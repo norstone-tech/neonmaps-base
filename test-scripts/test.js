@@ -2,7 +2,7 @@
 
 // const fileProto = schema.parse(fs.readFileSync("proto-defs/fileformat.proto"));
 // const osmProto = schema.parse(fs.readFileSync("proto-defs/osmformat.proto"));
-const {MapReader} = require("../");
+const {MapReader} = require("../lib");
 const {writeFileSync} = require("fs");
 (async () => {
 	try{

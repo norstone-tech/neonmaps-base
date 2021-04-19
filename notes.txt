@@ -1,0 +1,8 @@
+PBF defs from https://github.com/openstreetmap/OSM-binary/tree/master/src
+
+Problems I went through:
+	tried using pbf and protocol-buffers libraries, didn't support groups (header also looked strange)
+	then tried google's (bloated) library, also didn't work (complained about unexpected end reading 64-bit value)
+	turns out I was using the wrong decompression algo, deflate -> unzip and switching back to pbf worked
+		first tried this hypothesis by checking against raw_size
+		note: The multiple levels of compression are insane! DELTA coding INSIDE zlib?

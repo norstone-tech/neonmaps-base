@@ -68,3 +68,4 @@ package-lock.json
 
 # map files used for testing
 *.osm.pbf
+*.neonmaps.*

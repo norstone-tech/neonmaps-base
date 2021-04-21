@@ -1,0 +1,48 @@
+syntax = "proto2"; // I should probably use proto3 but the other ones use 2, so 🤷🏻‍♂️
+message UnpackedNode {
+	required uint64 id = 1;
+	repeated string tagKeys = 2;
+	repeated string tagVals = 3;
+	required double lat = 4;
+	required double lon = 5;
+	// Optional metadata
+	optional int32 version = 10;
+	optional uint64 timestamp = 11;
+	optional uint64 changeset = 12;
+	optional uint64 uid = 13;
+	optional string user = 14;
+}
+message UnpackedWay {
+	required uint64 id = 1;
+	repeated string tagKeys = 2;
+	repeated string tagVals = 3;
+	repeated uint64 nodes = 4;
+	// Optional metadata
+	optional int32 version = 10;
+	optional uint64 timestamp = 11;
+	optional uint64 changeset = 12;
+	optional uint64 uid = 13;
+	optional string user = 14;
+}
+message UnpackedRelation {
+	message UnpackedRelationMember {
+		required uint64 id = 1;
+		required string type = 2;
+		required string role = 3; 
+	}
+	required uint64 id = 1;
+	repeated string tagKeys = 2;
+	repeated string tagVals = 3;
+	repeated UnpackedRelationMember members = 4;
+	// Optional metadata
+	optional int32 version = 10;
+	optional uint64 timestamp = 11;
+	optional uint64 changeset = 12;
+	optional uint64 uid = 13;
+	optional string user = 14;
+}
+message UnpackedElementsCache {
+	repeated UnpackedNode nodes = 1;
+	repeated UnpackedWay ways = 2;
+	repeated UnpackedRelation relations = 3;
+}

@@ -8,3 +8,4 @@ Problems I went through:
 		note: The multiple levels of compression are insane! DELTA coding INSIDE zlib?
 	creating a fuck-ton a files to create parent indexes was a bad idea (ENOSPC, inodes are actually pretty big)
 	linear searching through id -> parent file during indexing takes wayyy too long
+	in-place insertion needs to be done in large chunks

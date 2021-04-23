@@ -120,11 +120,11 @@ class ElementParentIndexer {
 		// Check if we have room to insert and still have a 0-terminator
 		if(endOffset >= this.parentFileSize){
 			await this.growParentFile(INT48_SIZE * NEW_PARENT_LIST_COUNT);
-		}else if((await this.this.parentFile.read(endOffset, INT48_SIZE)).readUIntLE(0, INT48_SIZE) !== 0){
+		}else if((await this.parentFile.read(endOffset, INT48_SIZE)).readUIntLE(0, INT48_SIZE) !== 0){
 			endOffset -= 6; // Last number is 0, we don't need to copy that
 			// We've approached the start of another list, move this list at the end and make it bigger
 			const oldParentFileSize = this.parentFileSize;
-			const parentList = await this.this.parentFile.read(startOffset, endOffset);
+			const parentList = await this.parentFile.read(startOffset, endOffset);
 			await this.parentFile.write(startOffset, Buffer.alloc(endOffset - startOffset));
 			for(offset = startOffset; offset < endOffset; offset += INT48_SIZE * NEW_PARENT_LIST_COUNT){
 				this.emptyParentSpaces.push(offset);

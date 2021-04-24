@@ -1,9 +1,26 @@
 {
+	"name": "neonmaps-base",
+	"version": "0.1.0",
+	"author": {
+		"name": "Aritz Beobide-Cardinal",
+		"email": "aritz@aritzcracker.ca"
+	},
+	"license": "Artistic-2.0",
 	"main": "index.js",
+	"bin": {
+		"neonmaps-id-indexer": "./bin/neonmaps-id-indexer.js"
+	},
 	"dependencies": {
 		"pbf": "^3.2.1",
 		"protocol-buffers-schema": "^3.5.1",
 		"commander": "^7.2.0",
 		"binary-search-bounds": "^2.0.5"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/norstone-tech/neonmaps-base"
+	},
+	"bugs": {
+		"url": "https://github.com/norstone-tech/neonmaps-base/issues"
 	}
 }

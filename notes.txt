@@ -6,3 +6,4 @@ Problems I went through:
 	turns out I was using the wrong decompression algo, deflate -> unzip and switching back to pbf worked
 		first tried this hypothesis by checking against raw_size
 		note: The multiple levels of compression are insane! DELTA coding INSIDE zlib?
+	mapping parents for every invididual element was a very bad idea

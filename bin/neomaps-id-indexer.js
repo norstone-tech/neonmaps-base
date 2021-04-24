@@ -143,8 +143,12 @@ const unpackIndexFile = async function(mapPath){
 		relationIDs
 	};
 }
-
-const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset){
+const writeAndWait = async function(/**@type {fs.WriteStream}*/ stream, /**@type {Buffer}*/ data){
+	if(!stream.write(data)){
+		return new Promise(resolve => stream.once("drain", resolve));
+	}
+}
+const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset, mapFileHashPromise){
 	let relativeFileOffset = 0;
 	const relativeEndOffset = mapSize - fileOffset;
 	const indexData = await unpackIndexFile(mapPath);
@@ -424,19 +428,87 @@ const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset){
 			"%)"
 		);
 	}
-	await fsp.writeFile("stuff.txt", require("util").inspect({
-		nodeToWayOffsetMap,
-		nodeToRelationOffsetMap,
-		wayToRelationOffsetMap,
-		relationToRelationOffsetMap
-	}, false, Infinity, false));
+	let parentLengthByteLength = 0;
+	const mapForEachFunc = (/**@type {Array<Array<number>>} */ data) => {
+		data.sort((a, b) => a[0] - b[0]);
+		if(data.length > parentLengthByteLength){
+			parentLengthByteLength = data.length;
+		}
+	};
+	nodeToWayOffsetMap.forEach(mapForEachFunc);
+	nodeToRelationOffsetMap.forEach(mapForEachFunc);
+	wayToRelationOffsetMap.forEach(mapForEachFunc);
+	relationToRelationOffsetMap.forEach(mapForEachFunc);
+	parentLengthByteLength = Math.ceil(Math.ceil(Math.log2(parentLengthByteLength + 1)) / 8);
+
 	console.log("Element parent mapping: " + relativeEndOffset + "/" + relativeEndOffset + " (100%)");
-	console.log({
-		nodeToWayOffsetMap,
-		nodeToRelationOffsetMap,
-		wayToRelationOffsetMap,
-		relationToRelationOffsetMap
+	const parentsToWrite = nodeToWayOffsetMap.size + nodeToRelationOffsetMap.size + wayToRelationOffsetMap.size +
+		relationToRelationOffsetMap.size;
+	let parentsWritten = 0;
+	/**@type {Buffer} */
+	const fileHash = await mapFileHashPromise;
+	console.log("Element parent file writing: 0/" + parentsToWrite + " (0%)");
+	const mapName = mapPath.substring(mapPath.lastIndexOf(path.sep) + 1, mapPath.length - ".osm.pbf".length);
+	const indexFileStream = fs.createWriteStream(path.resolve(mapPath, "..", mapName + ".neonmaps.parent_index"));
+	const tmpParentListPath = tmpDir + path.sep + "parent_list";
+	const tmpParentListStream = fs.createWriteStream(tmpParentListPath);
+	const indexBuf = Buffer.allocUnsafe(INT48_SIZE * 2);
+	const listLengthBuf = Buffer.alloc(parentLengthByteLength);
+	const listBuf = Buffer.allocUnsafe(INT48_SIZE * 5);
+
+	const magic = "neonmaps.parent_index\0";
+	let listOffset = magic.length + fileHash.length + 1 + parentsToWrite * 2 * INT48_SIZE + 4 * INT48_SIZE;
+	indexFileStream.write(magic);
+	indexFileStream.write(fileHash);
+	indexFileStream.write(Buffer.alloc(1, parentLengthByteLength));
+	indexBuf.writeIntLE(nodeToWayOffsetMap.size, 0, INT48_SIZE);
+	indexBuf.writeIntLE(nodeToRelationOffsetMap.size, INT48_SIZE, INT48_SIZE);
+	indexFileStream.write(indexBuf);
+	indexBuf.writeIntLE(wayToRelationOffsetMap.size, 0, INT48_SIZE);
+	indexBuf.writeIntLE(relationToRelationOffsetMap.size, INT48_SIZE, INT48_SIZE);
+	indexFileStream.write(indexBuf);
+
+
+	const writeStuff = async (/**@type {Map<number, Array<Array<number>>>} */ childToParentMap) => {
+		parentsWritten += 1;
+		const childOffsets = [...childToParentMap.keys()];
+		childOffsets.sort();
+		for(let i = 0; i < childOffsets.length; i += 1){
+			parentsWritten += 1;
+			indexBuf.writeUIntLE(childOffsets[i], 0, INT48_SIZE);
+			indexBuf.writeUIntLE(listOffset, INT48_SIZE, INT48_SIZE);
+			await writeAndWait(indexFileStream, indexBuf);
+			const parentData = childToParentMap.get(childOffsets[i]);
+			listLengthBuf.writeUIntLE(parentData.length, 0, parentLengthByteLength);
+			await writeAndWait(tmpParentListStream, listLengthBuf);
+			listOffset += listLengthBuf;
+			for(let ii = 0; ii < parentData.length; ii += 1){
+				parentData[ii].forEach((val, iii) => listBuf.writeUIntLE(val, iii * INT48_SIZE, INT48_SIZE));
+				await writeAndWait(tmpParentListStream, listBuf);
+				listOffset += listBuf.length;
+			}
+
+			logProgressMsg(
+				"Element parent file writing: " + parentsWritten + "/" + parentsToWrite + " (" +
+				(parentsWritten / parentsToWrite * 100).toFixed(2) +
+				"%)"
+			);
+		}
+	};
+	await writeStuff(nodeToWayOffsetMap);
+	await writeStuff(nodeToRelationOffsetMap);
+	await writeStuff(wayToRelationOffsetMap);
+	await writeStuff(relationToRelationOffsetMap);
+	const tmpFileClose = new Promise(resolve => {
+		tmpParentListStream.once("close", resolve);
 	});
+	tmpParentListStream.end();
+	await tmpFileClose;
+	fs.createReadStream(tmpParentListPath).pipe(indexFileStream);
+	await new Promise(resolve => {
+		indexFileStream.once("close", resolve);
+	});
+	console.log("Element parent file writing: " + parentsToWrite + "/" + parentsToWrite + " (100%)");
 };
 (async() => {
 	try{
@@ -448,6 +520,14 @@ const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset){
 		const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "neonmaps-indexer-"));
 		let fileOffset = (await mapReader.readMapSegment(0))._byte_size;
 		let firstOffsetWithNonNode = 0;
+		/**@type {Promise<Buffer>} */
+		const mapFileHashPromise = new Promise((resolve, reject) => {
+			const hasher = crypto.createHash("sha512");
+			const mapFileStream = fs.createReadStream(mapPath);
+			mapFileStream.once("error", reject);
+			mapFileStream.on("data", c => {hasher.update(c);});
+			mapFileStream.once("end", () => resolve(hasher.digest()));
+		});
 		if(options.elemIndex){
 			const nodeIndexStream = fs.createWriteStream(path.resolve(tmpDir, "nodes"));
 			const wayIndexStream = fs.createWriteStream(path.resolve(tmpDir, "ways"));
@@ -455,14 +535,6 @@ const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset){
 			let nodeIndexSize = 0;
 			let wayIndexSize = 0;
 			let relationIndexSize = 0;
-			/**@type {Promise<Buffer>} */
-			const mapFileHashPromise = new Promise((resolve, reject) => {
-				const hasher = crypto.createHash("sha512");
-				const mapFileStream = fs.createReadStream(mapPath);
-				mapFileStream.once("error", reject);
-				mapFileStream.on("data", c => {hasher.update(c);});
-				mapFileStream.once("end", () => resolve(hasher.digest()));
-			});
 			console.log("Element ID indexing: " + fileOffset + "/" + mapSize + " (0%)");
 			while(fileOffset < mapSize){
 				/**@type {import("../lib/map-reader-base").OSMData} */
@@ -581,9 +653,9 @@ const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset){
 			}
 		}
 		if(options.parentIndex){
-			await parentIndex(mapPath, mapSize, tmpDir, firstOffsetWithNonNode);
+			await parentIndex(mapPath, mapSize, tmpDir, firstOffsetWithNonNode, mapFileHashPromise);
 		}
-		// await fsp.rm(tmpDir, {recursive: true, force: true});
+		await fsp.rm(tmpDir, {recursive: true, force: true});
 		await mapReader.stop();
 	}catch(ex){
 		process.exitCode = 1;

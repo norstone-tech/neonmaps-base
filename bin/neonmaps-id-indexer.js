@@ -452,42 +452,40 @@ const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 	const indexFileStream = fs.createWriteStream(path.resolve(mapPath, "..", mapName + ".neonmaps.parent_index"));
 	const tmpParentListPath = tmpDir + path.sep + "parent_list";
 	const tmpParentListStream = fs.createWriteStream(tmpParentListPath);
-	const indexBuf = Buffer.allocUnsafe(INT48_SIZE * 2);
-	const listLengthBuf = Buffer.alloc(parentLengthByteLength);
-	const listBuf = Buffer.allocUnsafe(INT48_SIZE * 5);
 
 	const magic = "neonmaps.parent_index\0";
 	let listOffset = magic.length + fileHash.length + 1 + parentsToWrite * 2 * INT48_SIZE + 4 * INT48_SIZE;
 	indexFileStream.write(magic);
 	indexFileStream.write(fileHash);
 	indexFileStream.write(Buffer.alloc(1, parentLengthByteLength));
-	indexBuf.writeIntLE(nodeToWayOffsetMap.size, 0, INT48_SIZE);
-	indexBuf.writeIntLE(nodeToRelationOffsetMap.size, INT48_SIZE, INT48_SIZE);
-	indexFileStream.write(indexBuf);
-	indexBuf.writeIntLE(wayToRelationOffsetMap.size, 0, INT48_SIZE);
-	indexBuf.writeIntLE(relationToRelationOffsetMap.size, INT48_SIZE, INT48_SIZE);
-	indexFileStream.write(indexBuf);
-
-
+	const headerDataBuf = Buffer.allocUnsafe(INT48_SIZE * 4)
+	headerDataBuf.writeIntLE(nodeToWayOffsetMap.size, 0, INT48_SIZE);
+	headerDataBuf.writeIntLE(nodeToRelationOffsetMap.size, INT48_SIZE, INT48_SIZE);
+	headerDataBuf.writeIntLE(wayToRelationOffsetMap.size, INT48_SIZE * 2, INT48_SIZE);
+	headerDataBuf.writeIntLE(relationToRelationOffsetMap.size, INT48_SIZE * 3, INT48_SIZE);
+	indexFileStream.write(headerDataBuf);
 	const writeStuff = async (/**@type {Map<number, Array<Array<number>>>} */ childToParentMap) => {
 		parentsWritten += 1;
 		const childOffsets = [...childToParentMap.keys()];
-		childOffsets.sort();
+		childOffsets.sort((a, b) => a - b);
 		for(let i = 0; i < childOffsets.length; i += 1){
 			parentsWritten += 1;
+			const indexBuf = Buffer.allocUnsafe(INT48_SIZE * 2);
 			indexBuf.writeUIntLE(childOffsets[i], 0, INT48_SIZE);
 			indexBuf.writeUIntLE(listOffset, INT48_SIZE, INT48_SIZE);
 			await writeAndWait(indexFileStream, indexBuf);
+
 			const parentData = childToParentMap.get(childOffsets[i]);
+			const listLengthBuf = Buffer.allocUnsafe(parentLengthByteLength);
 			listLengthBuf.writeUIntLE(parentData.length, 0, parentLengthByteLength);
 			await writeAndWait(tmpParentListStream, listLengthBuf);
-			listOffset += listLengthBuf;
+			listOffset += listLengthBuf.length;
 			for(let ii = 0; ii < parentData.length; ii += 1){
+				const listBuf = Buffer.allocUnsafe(INT48_SIZE * parentData[ii].length);
 				parentData[ii].forEach((val, iii) => listBuf.writeUIntLE(val, iii * INT48_SIZE, INT48_SIZE));
 				await writeAndWait(tmpParentListStream, listBuf);
 				listOffset += listBuf.length;
 			}
-
 			logProgressMsg(
 				"Element parent file writing: " + parentsWritten + "/" + parentsToWrite + " (" +
 				(parentsWritten / parentsToWrite * 100).toFixed(2) +

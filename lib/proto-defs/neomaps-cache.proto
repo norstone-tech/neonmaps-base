@@ -1,8 +1,8 @@
 syntax = "proto2"; // I should probably use proto3 but the other ones use 2, so 🤷🏻‍♂️
 message UnpackedNode {
 	required uint64 id = 1;
-	repeated string tagKeys = 2;
-	repeated string tagVals = 3;
+	repeated string tag_keys = 2;
+	repeated string tag_vals = 3;
 	required double lat = 4;
 	required double lon = 5;
 	// Optional metadata
@@ -14,8 +14,8 @@ message UnpackedNode {
 }
 message UnpackedWay {
 	required uint64 id = 1;
-	repeated string tagKeys = 2;
-	repeated string tagVals = 3;
+	repeated string tag_keys = 2;
+	repeated string tag_vals = 3;
 	repeated uint64 nodes = 4;
 	// Optional metadata
 	optional int32 version = 10;
@@ -31,8 +31,8 @@ message UnpackedRelation {
 		required string role = 3; 
 	}
 	required uint64 id = 1;
-	repeated string tagKeys = 2;
-	repeated string tagVals = 3;
+	repeated string tag_keys = 2;
+	repeated string tag_vals = 3;
 	repeated UnpackedRelationMember members = 4;
 	// Optional metadata
 	optional int32 version = 10;

@@ -760,19 +760,32 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		// Not using cachedMapReader because I only want that to cache nodes
 		const rawData = await mapReader.readMapSegment(fileOffset);
 		const mapData = MapReaderBase.decodeRawData(rawData);
-		console.time("Node search");
-		const nodeListList = await Promise.all(
-			mapData.ways.map(way => 
-				Promise.all(way.nodes.map(nodeID => cachedMapReader.getNode(nodeID)))
-			)
-		);
-		console.timeEnd("Node search");
-
+		console.time("Node search start");
+		const nodeListList = // await Promise.all(
+			mapData.ways.map((way, wayIndex) => 
+				Promise.all(way.nodes.map(async nodeID => {
+					// await new Promise(resolve => {setTimeout(resolve, wayIndex);});
+					const node = await cachedMapReader.getNode(nodeID);
+					if(node == null){
+						return null;
+					}
+					return [
+						Math.round(node.lat * 1000000000),
+						Math.round(node.lon * 1000000000)
+					];
+				}))
+			);
+		//);
+		console.timeEnd("Node search start");
+		console.time("way assembly");
 		for(let i = 0; i < mapData.ways.length; i += 1){
 			const way = mapData.ways[i];
-			// I would have love to use .bind here, but intellisense doesn't recognize it 😞
-			const nodes = nodeListList[i];
-			//const nodes = await Promise.all(way.nodes.map(nodeID => cachedMapReader.getNode(nodeID)));
+			const nodeResultStart = Date.now();
+			const nodes = await nodeListList[i];
+			const nodeResultTime = Date.now() - nodeResultStart;
+			if(nodeResultTime > 75){
+				console.log(nodeResultTime + "ms for resolving nodes for way " + way.id)
+			}
 			if(nodes.includes(null)){
 				console.error(
 					"WARNING: Way " + way.id + " refers to nodes which don't exist! " +
@@ -786,8 +799,8 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			const nodesLast = nodes.length - 1;
 			const nodesLen = way.nodes[0] === way.nodes[nodesLast] ? nodes.length : nodesLast;
 			for(let ii = 0; ii < nodesLen; ii += 1){
-				const lat = Math.round(nodes[ii].lat * 1000000000);
-				const lon = Math.round(nodes[ii].lon * 1000000000);
+				const lat = nodes[ii][0];
+				const lon = nodes[ii][1];
 				encodedLat.push(lat - lastLat);
 				encodedLon.push(lon - lastLon);
 				lastLat = lat;
@@ -802,6 +815,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 				}
 			});
 		}
+		console.timeEnd("way assembly");
 		if(wayGeometries.length){
 			const pbf = new Pbf();
 			WayGeometryBlockParser.write({geometries: wayGeometries}, pbf);

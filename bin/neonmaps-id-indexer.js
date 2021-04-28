@@ -2,6 +2,7 @@ const os = require("os");
 const path = require("path");
 const {MapReaderBase} = require("../lib/map-reader-base");
 const {MapReader} = require("../lib/map-reader");
+const {NumericIndexFileSearcher} = require("../lib/index-file-searcher");
 const bounds = require("binary-search-bounds");
 const {program} = require('commander');
 const {promises: fsp} = require("fs");
@@ -24,6 +25,7 @@ const OSM_WAY = 1;
 const OSM_RELATION = 2;
 const MAX_ID_VALUE = 2 ** 48 - 1; // This thing uses unsigned int48s for indexing
 const INT32_SIZE = 4;
+const INT40_SIZE = 5;
 const INT48_SIZE = 6;
 const ELEMENT_INDEX_MAGIC_SIZE = 23;
 const ELEMENT_INDEX_CHECKSUM_SIZE = 64;
@@ -738,6 +740,67 @@ const getMultipolyGeo = async function(
 };
 
 const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFileHashPromise){
+	// First we're going to store all the point locations seperately so geomatry resolving will be faster
+	const nodeStopOffset = fileOffset;
+	fileOffset = (await mapReader.readMapSegment(0))._byte_size;
+	const nodePosPath = tmpDir + path.sep + "node_pos";
+	const nodePosStream = fs.createWriteStream(nodePosPath);
+	while(fileOffset <= nodeStopOffset){
+		/**@type {import("../lib/map-reader-base").OSMData} */
+		const rawData = await mapReader.readMapSegment(fileOffset);
+		const {granularity, lat_offset: latOffset, lon_offset: lonOffset} = rawData;
+		fileOffset += rawData._byte_size;
+		for(const group of rawData.primitivegroup){
+			const {dense} = group;
+			if(dense){
+				let id = 0;
+				let lat = 0;
+				let lon = 0;
+				for(let i = 0; i < dense.id.length; i += 1){
+					// The highest possible value is 360000000000, which is less than 2**40
+					const posBuf = Buffer.allocUnsafe(INT48_SIZE + INT40_SIZE + INT40_SIZE);
+					id += dense.id[i];
+					posBuf.writeUIntLE(id, 0, INT48_SIZE);
+					lat += dense.lat[i];
+					posBuf.writeIntLE(latOffset + lat * granularity, INT48_SIZE, INT40_SIZE);
+					lon += dense.lon[i];
+					posBuf.writeIntLE(lonOffset + lon * granularity, INT48_SIZE + INT40_SIZE, INT40_SIZE);
+					await writeAndWait(nodePosStream, posBuf);
+				}
+			}
+			for(let i = 0; i < group.nodes.length; i += 1){
+				const node = group.nodes[i];
+				const posBuf = Buffer.allocUnsafe(INT48_SIZE + INT40_SIZE + INT40_SIZE);
+				posBuf.writeUIntLE(node.id, 0, INT48_SIZE);
+				posBuf.writeIntLE(latOffset + node.lat * granularity, INT48_SIZE, INT40_SIZE);
+				posBuf.writeIntLE(lonOffset + node.lon * granularity, INT48_SIZE + INT40_SIZE, INT40_SIZE);
+				await writeAndWait(nodePosStream, posBuf);
+			}
+		}
+		logProgressMsg(
+			"Node position indexing: " + fileOffset + "/" + nodeStopOffset + " (" +
+			(fileOffset / nodeStopOffset * 100).toFixed(2) +
+			"%)"
+		);
+	}
+	await new Promise(resolve => {
+		nodePosStream.end();
+		nodePosStream.once("close", resolve);
+	});
+	console.log("Node position indexing: " + nodeStopOffset + "/" + nodeStopOffset + " (100%)");
+	const nodePosSearcher = new NumericIndexFileSearcher(
+		nodePosPath,
+		INT48_SIZE + INT40_SIZE * 2,
+		INT48_SIZE,
+		0,
+		undefined,
+		undefined,
+		undefined,
+		10000000
+	);
+	await nodePosSearcher.init();
+	// Now we get to resolving all the ways and relations
+	fileOffset = nodeStopOffset;
 	let relativeFileOffset = 0;
 	const relativeEndOffset = mapSize - fileOffset;
 	const cachedMapReader = new MapReader(mapPath, 50, 300);
@@ -760,6 +823,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		// Not using cachedMapReader because I only want that to cache nodes
 		const rawData = await mapReader.readMapSegment(fileOffset);
 		const mapData = MapReaderBase.decodeRawData(rawData);
+		/*
 		console.time("Node search");
 		const nodeListList = await Promise.all(
 			mapData.ways.map(way => 
@@ -767,12 +831,57 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			)
 		);
 		console.timeEnd("Node search");
-
+		*/
+		
+		console.time("Node search start");
+		const nodeListList = //await Promise.all(
+			mapData.ways.map(way => 
+				Promise.all(way.nodes.map(async nodeID => {
+					const nodePosIndex = await nodePosSearcher.eq(nodeID);
+					if(nodePosIndex == -1){
+						return null;
+					}
+					const nodePosBuffer = await nodePosSearcher.item(nodePosIndex);
+					return [
+						nodePosBuffer.readIntLE(INT48_SIZE, INT40_SIZE),
+						nodePosBuffer.readIntLE(INT48_SIZE + INT40_SIZE, INT40_SIZE)
+					];
+				}))
+			)
+		//);
+		console.timeEnd("Node search start");
+		
+		console.time("Way assembly");
 		for(let i = 0; i < mapData.ways.length; i += 1){
 			const way = mapData.ways[i];
 			// I would have love to use .bind here, but intellisense doesn't recognize it 😞
-			const nodes = nodeListList[i];
+			// const nodes = nodeListList[i];
 			//const nodes = await Promise.all(way.nodes.map(nodeID => cachedMapReader.getNode(nodeID)));
+			const searchStart = Date.now();
+			const nodes = await nodeListList[i];
+			const searchTime = Date.now() - searchStart;
+			if((searchTime) > 75){
+				console.log(searchTime + "ms for way " + way.id);
+			}
+			/*
+			const searchStart = Date.now();
+			const nodes = await Promise.all(way.nodes.map(async nodeID => {
+				const nodePosIndex = await nodePosSearcher.eq(nodeID);
+				if(nodePosIndex == -1){
+					return null;
+				}
+				const nodePosBuffer = await nodePosSearcher.item(nodePosIndex);
+				return [
+					nodePosBuffer.readIntLE(INT48_SIZE, INT40_SIZE),
+					nodePosBuffer.readIntLE(INT48_SIZE + INT40_SIZE, INT40_SIZE)
+				];
+			}));
+			const searchTime = Date.now() - searchStart;
+			if((searchTime) > 75){
+				// console.log(searchTime + "ms for way " + way.id);
+			}
+			*/
+			
 			if(nodes.includes(null)){
 				console.error(
 					"WARNING: Way " + way.id + " refers to nodes which don't exist! " +
@@ -786,8 +895,8 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			const nodesLast = nodes.length - 1;
 			const nodesLen = way.nodes[0] === way.nodes[nodesLast] ? nodes.length : nodesLast;
 			for(let ii = 0; ii < nodesLen; ii += 1){
-				const lat = Math.round(nodes[ii].lat * 1000000000);
-				const lon = Math.round(nodes[ii].lon * 1000000000);
+				const lat = Math.round(nodes[ii][0]);
+				const lon = Math.round(nodes[ii][1]);
 				encodedLat.push(lat - lastLat);
 				encodedLon.push(lon - lastLon);
 				lastLat = lat;
@@ -802,6 +911,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 				}
 			});
 		}
+		console.timeEnd("Way assembly");
 		if(wayGeometries.length){
 			const pbf = new Pbf();
 			WayGeometryBlockParser.write({geometries: wayGeometries}, pbf);
@@ -886,7 +996,8 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 	const closePromise = Promise.all([
 		new Promise(resolve => relGeoStream.once("close", resolve)),
 		wayGeoFile.close(),
-		cachedMapReader.stop()
+		cachedMapReader.stop(),
+		nodePosSearcher.stop()
 	]);
 	const mapName = mapPath.substring(mapPath.lastIndexOf(path.sep) + 1, mapPath.length - ".osm.pbf".length);
 	const geoFileStream = fs.createWriteStream(path.resolve(mapPath, "..", mapName + ".neonmaps.geometry"));

@@ -532,6 +532,8 @@ const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 	});
 	console.log("Element parent file writing: " + parentsToWrite + "/" + parentsToWrite + " (100%)");
 };
+
+const cachedWayPointCache = new Map();
 /**
  * @typedef InternalPolygon
  * @property {boolean} closed
@@ -552,13 +554,24 @@ const getCachedWayPoints = async function(
 	const geoFileOffset = offsetMap.get(
 		(await indexedMapReader.wayElementFinder.item(offsetRefIndex)).readUIntLE(INT48_SIZE, INT48_SIZE)
 	);
-	const geoBlockLength = (
-		await fd.read(Buffer.allocUnsafe(INT32_SIZE), 0, INT32_SIZE, geoFileOffset)
-	).buffer.readUInt32LE();
+	let wayGeometries;
+	if(cachedWayPointCache.has(geoFileOffset)){
+		wayGeometries = cachedWayPointCache.get(geoFileOffset);
+		cachedWayPointCache.delete(geoFileOffset);
+		cachedWayPointCache.set(geoFileOffset, wayGeometries);
+	}else{
+		const geoBlockLength = (
+			await fd.read(Buffer.allocUnsafe(INT32_SIZE), 0, INT32_SIZE, geoFileOffset)
+		).buffer.readUInt32LE();
+		wayGeometries = WayGeometryBlockParser.read(new Pbf(
+			(await fd.read(Buffer.allocUnsafe(geoBlockLength), 0, geoBlockLength, geoFileOffset + INT32_SIZE)).buffer
+		)).geometries;
+		cachedWayPointCache.set(geoFileOffset, wayGeometries);
+		while(cachedWayPointCache.size > 50){
+			cachedWayPointCache.delete(cachedWayPointCache.keys().next().value);
+		}
+	}
 
-	const {geometries: wayGeometries} = WayGeometryBlockParser.read(new Pbf(
-		(await fd.read(Buffer.allocUnsafe(geoBlockLength), 0, geoBlockLength, geoFileOffset + INT32_SIZE)).buffer
-	));
 	const geometry = wayGeometries[bounds.eq(wayGeometries, {id: wayID}, (a, b) => a.id - b.id)];
 	if(geometry == null){
 		return null;

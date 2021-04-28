@@ -1,15 +1,29 @@
 const os = require("os");
 const path = require("path");
 const {MapReaderBase} = require("../lib/map-reader-base");
+const {MapReader} = require("../lib/map-reader");
 const bounds = require("binary-search-bounds");
 const {program} = require('commander');
 const {promises: fsp} = require("fs");
 const fs = require("fs");
 const crypto = require("crypto");
+const turf = require("@turf/helpers");
+const {default: geoIsClockwise} = require("@turf/boolean-clockwise");
+const {default: geoContains} = require("@turf/boolean-contains");
+const protoCompile = require('pbf/compile');
+const parseProtoSchema = require('protocol-buffers-schema');
+const Pbf = require("pbf");
+const {
+	WayGeometryBlock: WayGeometryBlockParser,
+	RelationGeometryBlock: RelationGeometryBlockParser
+} = protoCompile(
+	parseProtoSchema(fs.readFileSync(path.resolve(__dirname, "..", "lib", "proto-defs", "neomaps-cache.proto")))
+);
 const OSM_NODE = 0;
 const OSM_WAY = 1;
 const OSM_RELATION = 2;
 const MAX_ID_VALUE = 2 ** 48 - 1; // This thing uses unsigned int48s for indexing
+const INT32_SIZE = 4;
 const INT48_SIZE = 6;
 const ELEMENT_INDEX_MAGIC_SIZE = 23;
 const ELEMENT_INDEX_CHECKSUM_SIZE = 64;
@@ -20,6 +34,7 @@ const options = program
 	.option("--no-sanity-check", "Skip file validation")
 	.option("--no-elem-index", "Do not create element index")
 	.option("--no-parent-index", "Do not create element parent index")
+	.option("--no-geometry", "Do not create geometry files")
 	.parse()
 	.opts();
 const mapPath = path.resolve(options.map);
@@ -35,9 +50,10 @@ const logProgressMsg = function(...msg){
 }
 
 const sanityCheck = async function(){
-	console.log("Ensuring all IDs are increasing...");
 	const {size: mapSize} = await fsp.stat(mapPath);
 	const mapHeader = await mapReader.readMapSegment(0);
+	let readWay = false;
+	let readRelation = false;
 	let fileOffset = mapHeader._byte_size;
 	let lastNodeId = 0;
 	let lastWayId = 0;
@@ -47,6 +63,9 @@ const sanityCheck = async function(){
 		/**@type {import("../lib/map-reader-base").OSMData} */
 		const rawData = await mapReader.readMapSegment(fileOffset);
 		const mapSegment = MapReaderBase.decodeRawData(rawData);
+		if(mapSegment.nodes.length && (readWay || readRelation)){
+			throw new Error("Node appeared _after_ a relation segment or way segment");
+		}
 		for(let i = 0; i < mapSegment.nodes.length; i += 1){
 			const node = mapSegment.nodes[i];
 			if(lastNodeId >= node.id){
@@ -56,6 +75,10 @@ const sanityCheck = async function(){
 			if(lastNodeId > MAX_ID_VALUE){
 				throw new Error("Node ID greater than maximum " + MAX_ID_VALUE + " at offset " + fileOffset);
 			}
+		}
+		readWay = readWay || mapSegment.ways.length > 0;
+		if(mapSegment.ways.length && (readRelation)){
+			throw new Error("Way appeared _after_ a relation segment");
 		}
 		for(let i = 0; i < mapSegment.ways.length; i += 1){
 			const way = mapSegment.ways[i];
@@ -67,6 +90,7 @@ const sanityCheck = async function(){
 				throw new Error("Way ID greater than maximum " + MAX_ID_VALUE + " at offset " + fileOffset);
 			}
 		}
+		readRelation = readRelation || mapSegment.relations.length > 0;
 		for(let i = 0; i < mapSegment.relations.length; i += 1){
 			const relation = mapSegment.relations[i];
 			if(lastRelationId >= relation.id){
@@ -508,6 +532,419 @@ const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 	});
 	console.log("Element parent file writing: " + parentsToWrite + "/" + parentsToWrite + " (100%)");
 };
+/**
+ * @typedef InternalPolygon
+ * @property {boolean} closed
+ * @property {boolean} [inner]
+ * @property {Array<number>} lat
+ * @property {Array<number>} lon
+ */
+const getCachedWayPoints = async function(
+	/**@type {fsp.FileHandle}*/ fd,
+	/**@type {MapReader} */ indexedMapReader,
+	/**@type {Map<number, number>} */ offsetMap,
+	/**@type {number}*/ wayID
+){
+	const offsetRefIndex = await indexedMapReader.wayElementFinder.le(wayID)
+	if(offsetRefIndex === -1){
+		return null;
+	}
+	const geoFileOffset = offsetMap.get(
+		(await indexedMapReader.wayElementFinder.item(offsetRefIndex)).readUIntLE(INT48_SIZE, INT48_SIZE)
+	);
+	const geoBlockLength = (
+		await fd.read(Buffer.allocUnsafe(INT32_SIZE), 0, INT32_SIZE, geoFileOffset)
+	).buffer.readUInt32LE();
+
+	const {geometries: wayGeometries} = WayGeometryBlockParser.read(new Pbf(
+		(await fd.read(Buffer.allocUnsafe(geoBlockLength), 0, geoBlockLength, geoFileOffset + INT32_SIZE)).buffer
+	));
+	const geometry = wayGeometries[bounds.eq(wayGeometries, {id: wayID}, (a, b) => a.id - b.id)];
+	if(geometry == null){
+		return null;
+	}
+	/**@type {Array<number>} */
+	const lat = [];
+	/**@type {Array<number>} */
+	const lon = [];
+	let curLat = 0;
+	let curLon = 0;
+	for(let i = 0; i < geometry.geometry.lat.length; i += 1){
+		curLat += geometry.geometry.lat[i];
+		curLon += geometry.geometry.lon[i];
+		lat.push(curLat);
+		lon.push(curLon);
+	}
+	return {
+		closed: Boolean(geometry.geometry.closed),
+		lat,
+		lon
+	};
+}
+const deltaEncodeNums = function(/**@type {Array<number>*/ input){
+	/**@type {Array<number>} */
+	const result = [];
+	let lastNum = 0;
+	for(let i = 0; i < input.length; i += 1){
+		result.push(input[i] - lastNum);
+		lastNum = input[i];
+	}
+	return result;
+}
+const matchPointOrderToRingType = function(/**@type {InternalPolygon}*/ poly){
+	if(poly.inner == null){
+		return;
+	}
+	const points = poly.lat.map((v, i) => [v, poly.lon[i]]);
+	points.push(points[0]);
+	// inner rings (holes) should be clockwise
+	if(geoIsClockwise(turf.lineString(points)) != inner){
+		poly.lat.reverse();
+		poly.lon.reverse();
+	}
+}
+const addPointsToIncompletePoly = function(
+	/**@type {Set<InternalPolygon>}*/ incompletePolys,
+	/**@type {Array<InternalPolygon>}*/ completePolys,
+	/**@type {InternalPolygon}*/ pointsToAdd
+){
+	if(pointsToAdd.closed){
+		completePolys.push(pointsToAdd);
+		return pointsToAdd;
+	}
+	/**@type {InternalPolygon} */
+	let poly;
+	for(const p of incompletePolys){
+		const lastToAdd = pointsToAdd.lat.length - 1;
+		const last = p.lat.length - 1;
+		/* https://wiki.openstreetmap.org/wiki/Relation:multipolygon says:
+		   The direction of the ways does not matter. The order of the relation members does not matter. ffs */
+		if(p.lat[0] == pointsToAdd.lat[0] && p.lon[0] == pointsToAdd.lon[0]){
+			const latToAdd = pointsToAdd.lat.reverse();
+			latToAdd.pop();
+			const lonToAdd = pointsToAdd.lat.reverse();
+			lonToAdd.pop();
+			p.lat.unshift(...latToAdd);
+			p.lon.unshift(...lonToAdd);
+		}else if(p.lat[0] == pointsToAdd.lat[lastToAdd] && p.lon[0] == pointsToAdd.lon[lastToAdd]){
+			const latToAdd = pointsToAdd.lat;
+			latToAdd.pop();
+			const lonToAdd = pointsToAdd.lat;
+			lonToAdd.pop();
+			p.lat.unshift(...latToAdd);
+			p.lon.unshift(...lonToAdd);
+		}else if(p.lat[last] == pointsToAdd.lat[lastToAdd] && p.lon[last] == pointsToAdd.lon[lastToAdd]){
+			const latToAdd = pointsToAdd.lat.reverse();
+			latToAdd.shift();
+			const lonToAdd = pointsToAdd.lat.reverse();
+			lonToAdd.shift();
+			p.lat.push(...latToAdd);
+			p.lon.push(...lonToAdd);
+		}else if(p.lat[last] == pointsToAdd.lat[0] && p.lon[last] == pointsToAdd.lon[0]){
+			const latToAdd = pointsToAdd.lat;
+			latToAdd.shift();
+			const lonToAdd = pointsToAdd.lat;
+			lonToAdd.shift();
+			p.lat.push(...latToAdd);
+			p.lon.push(...lonToAdd);
+		}else{
+			continue;
+		}
+		poly = p;
+		break;
+	}
+	if(poly == null){
+		poly = {
+			closed: false,
+			lat: pointsToAdd.lat,
+			lon: pointsToAdd.lon
+		};
+		incompletePolys.add(poly);
+	}else{
+		const last = poly.lat.length - 1;
+		if(poly.lat[0] == poly.lat[last] && poly.lon[0] == poly.lon[last]){
+			poly.lat.pop();
+			poly.lon.pop();
+			poly.closed = true;
+			incompletePolys.delete(poly);
+			completePolys.push(poly);
+			return poly;
+		}
+	}
+}
+const getMultipolyGeo = async function(
+	/**@type {import("../lib/map-reader-base").OSMRelation}*/ relation,
+	/**@type {fsp.FileHandle}*/ fd,
+	/**@type {MapReader} */ mapReader,
+	/**@type {Map<number, number>} */ offsetMap
+) {
+	// const subareaMembers = relation.members.filter(mem => mem.role == "subarea");
+	const members = relation.members.filter(mem =>
+		mem.type == "way" && (
+			mem.role == "" || // deprecated alias for "outer"
+			mem.role == "outer" ||
+			mem.role == "inner"
+		)
+	);
+	/**@type {Set<InternalPolygon>} */
+	const incompletePolys = new Set();
+	/**@type {Array<InternalPolygon>} */
+	const completePolys = [];
+	for(let i = 0; i < members.length; i += 1){
+		const wayPoints = await getCachedWayPoints(fd, mapReader, offsetMap, members[i].id);
+		if(wayPoints == null){
+			// TODO: Fall back on subareas if they exist
+			console.error(
+				"WARNING: Relation " + relation.id + " refers to ways which don't exist; " +
+				"Geometry will be omitted!"
+			);
+			return null;
+		}
+		const completePoly = addPointsToIncompletePoly(incompletePolys, completePolys, wayPoints);
+		if(completePoly != null){
+			completePoly.inner = members[i].role == "inner"; // yes, I am just trusting whatever the last way said
+			matchPointOrderToRingType(completePoly);
+		}
+	}
+	const completePolyTurf = completePolys.map(poly => {
+		const coords = poly.lat.map((lat, i) => [lat, poly.lon[i]]);
+		coords.push(coords[0]);
+		return turf.polygon([coords], {original: poly});
+	});
+	// Put islands and "inner" rings at the end of the array
+	completePolyTurf.sort((a, b) => {
+		if(geoContains(a, b)){
+			return -1;
+		}
+		if(geoContains(b, a)){
+			return 1;
+		}
+		return 0;
+	});
+	for(let i = 0; i < completePolys.length; i += 1){
+		const poly = completePolyTurf[i].properties.original;
+		poly.lat = deltaEncodeNums(poly.lat);
+		poly.lon = deltaEncodeNums(poly.lon);
+		completePolys[i] = poly;
+	}
+	if(incompletePolys.size){
+		console.error("WARNING: Relation " + relation.id + " contains unclosed polygons; Geometry will be incorrect!");
+	}
+	if(!completePolys.length){
+		console.error("WARNING: Relation " + relation.id + " contains no closed polygons; Geometry will be omitted!");
+		return null;
+	}
+	return completePolys;
+};
+
+const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFileHashPromise){
+	let relativeFileOffset = 0;
+	const relativeEndOffset = mapSize - fileOffset;
+	const cachedMapReader = new MapReader(mapPath, 50, 300);
+	await cachedMapReader.init();
+	/**@type {Map<number, number?} */
+	const wayGeoOffsets = new Map();
+	let curWayGeoOffset = 0;
+	const wayGeoPath = tmpDir + path.sep + "way_geometries";
+	/**@type {Map<number, number?} */
+	const relGeoOffsets = new Map();
+	let curRelGeoOffset = 0;
+	const relGeoPath = tmpDir + path.sep + "relation_geometries";
+
+	const wayGeoFile = await fsp.open(wayGeoPath, "w+");
+	const relGeoStream = fs.createWriteStream(relGeoPath);
+	while(fileOffset < mapSize){
+		const wayGeometries = [];
+		const relationGeometries = [];
+
+		// Not using cachedMapReader because I only want that to cache nodes
+		const rawData = await mapReader.readMapSegment(fileOffset);
+		const mapData = MapReaderBase.decodeRawData(rawData);
+		console.time("Node search");
+		const nodeListList = await Promise.all(
+			mapData.ways.map(way => 
+				Promise.all(way.nodes.map(nodeID => cachedMapReader.getNode(nodeID)))
+			)
+		);
+		console.timeEnd("Node search");
+
+		for(let i = 0; i < mapData.ways.length; i += 1){
+			const way = mapData.ways[i];
+			// I would have love to use .bind here, but intellisense doesn't recognize it 😞
+			const nodes = nodeListList[i];
+			//const nodes = await Promise.all(way.nodes.map(nodeID => cachedMapReader.getNode(nodeID)));
+			if(nodes.includes(null)){
+				console.error(
+					"WARNING: Way " + way.id + " refers to nodes which don't exist! " +
+					"Geometry will not be included..."
+				);
+			}
+			const encodedLat = [];
+			const encodedLon = [];
+			let lastLat = 0;
+			let lastLon = 0;
+			const nodesLast = nodes.length - 1;
+			const nodesLen = way.nodes[0] === way.nodes[nodesLast] ? nodes.length : nodesLast;
+			for(let ii = 0; ii < nodesLen; ii += 1){
+				const lat = Math.round(nodes[ii].lat * 1000000000);
+				const lon = Math.round(nodes[ii].lon * 1000000000);
+				encodedLat.push(lat - lastLat);
+				encodedLon.push(lon - lastLon);
+				lastLat = lat;
+				lastLon = lon;
+			}
+			wayGeometries.push({
+				id: way.id,
+				geomtery: {
+					closed: nodesLen == nodesLast,
+					lat: encodedLat,
+					lon: encodedLon
+				}
+			});
+		}
+		if(wayGeometries.length){
+			const pbf = new Pbf();
+			WayGeometryBlockParser.write({geometries: wayGeometries}, pbf);
+			const pbfBuf = pbf.finish();
+			const geoBuf = Buffer.concat([Buffer.allocUnsafe(INT32_SIZE), pbfBuf]);
+			wayGeoOffsets.set(fileOffset, curWayGeoOffset);
+			geoBuf.writeUInt32LE(pbfBuf.length);
+			wayGeoFile.write(geoBuf, 0, geoBuf.length, curWayGeoOffset);
+			curWayGeoOffset += geoBuf.length;
+		}
+
+		for(let i = 0; i < mapData.relations.length; i += 1){
+			const relation = mapData.relations[i];
+			const relationType = relation.tags.get("type");
+			if(relationType == "multipolygon" || relationType == "boundary"){
+				const geometry = await getMultipolyGeo(relation, wayGeoFile, cachedMapReader, wayGeoOffsets);
+				if(geometry != null){
+					relationGeometries.push({
+						id: relation.id,
+						geometry
+					});
+				}
+			}else if(relationType == "route"){
+				const members = relation.members.filter(mem =>
+					mem.type == "way" && (
+						mem.role == "" ||
+						mem.role == "route" || // alias of ""
+						mem.role == "forward" ||
+						mem.role == "backward" ||
+						mem.role == "north" ||
+						mem.role == "south" ||
+						mem.role == "east" ||
+						mem.role == "west" ||
+						mem.role == "hail_and_ride" ||
+						mem.role == "reverse" ||
+						mem.role == "link"
+					)
+				);
+				/**@type {Set<InternalPolygon>} */
+				const incompletePolys = new Set();
+				/**@type {Array<InternalPolygon>} */
+				const geometry = [];
+				for(let i = 0; i < members.length; i += 1){
+					const wayPoints = await getCachedWayPoints(fd, cachedMapReader, wayGeoOffsets, members[i].id);
+					if(wayPoints == null){
+						continue;
+					}
+					addPointsToIncompletePoly(incompletePolys, geometry, wayPoints);
+				}
+				geometry.push(...incompletePolys);
+				for(let i = 0; i < geometry.length; i += 1){
+					geometry[i].lat = deltaEncodeNums(geometry[i].lat);
+					geometry[i].lon = deltaEncodeNums(geometry[i].lon);
+				}
+				if(completePolys.length){
+					relationGeometries.push({
+						id: relation.id,
+						geometry
+					});
+				}
+			}
+		}
+		if(relationGeometries.length){
+			const pbf = new Pbf();
+			RelationGeometryBlockParser.write({geometries: relationGeometries}, pbf);
+			const pbfBuf = pbf.finish();
+			const geoBuf = Buffer.concat([Buffer.allocUnsafe(INT32_SIZE), pbfBuf]);
+			relGeoOffsets.set(fileOffset, curRelGeoOffset);
+			geoBuf.writeUInt32LE(pbfBuf.length);
+			await writeAndWait(relGeoStream, geoBuf);
+			curRelGeoOffset += geoBuf.length;
+		}
+		fileOffset += rawData._byte_size;
+		relativeFileOffset += rawData._byte_size;
+		logProgressMsg(
+			"Element geometry resolving: " + relativeFileOffset + "/" + relativeEndOffset + " (" +
+			(relativeFileOffset / relativeEndOffset * 100).toFixed(2) +
+			"%)"
+		);
+	}
+	console.log("Element geometry resolving: " + relativeEndOffset + "/" + relativeEndOffset + " (100%)");
+	const closePromise = Promise.all([
+		new Promise(resolve => relGeoStream.once("close", resolve)),
+		wayGeoFile.close(),
+		cachedMapReader.stop()
+	]);
+	const mapName = mapPath.substring(mapPath.lastIndexOf(path.sep) + 1, mapPath.length - ".osm.pbf".length);
+	const geoFileStream = fs.createWriteStream(path.resolve(mapPath, "..", mapName + ".neonmaps.geometry"));
+	const fileMagic = "neonmaps.geometry\0";
+	geoFileStream.write(fileMagic); // NUL is the version number, which is now 0.
+	geoFileStream.write(await mapFileHashPromise);
+	const offsetNumBuffer = Buffer.allocUnsafe(INT48_SIZE * 3);
+	const wayOffsetStart = fileMagic.length + 64 + offsetNumBuffer.length; // 512 bits -> 64 bytes
+	offsetNumBuffer.writeUIntLE(wayOffsetStart, 0, INT48_SIZE);
+	const relOffsetStart = wayOffsetStart + wayGeoOffsets.size * 2 * INT48_SIZE;
+	offsetNumBuffer.writeUIntLE(relOffsetStart, INT48_SIZE, INT48_SIZE);
+	const relOffsetEnd = relOffsetStart + relGeoOffsets.size * 2 * INT48_SIZE;
+	offsetNumBuffer.writeUIntLE(relOffsetEnd, INT48_SIZE, INT48_SIZE);
+
+	geoFileStream.write(offsetNumBuffer);
+	relGeoStream.end();
+	await closePromise;
+	let thingsWritten = 0;
+	const thingsToWrite = wayGeoOffsets.size + relGeoOffsets.size + 2;
+	console.log("Element geometry file writing: 0/" + thingsToWrite + " (0%)");
+	for(const [mapOffset, fileOffset] of wayGeoOffsets){
+		thingsWritten += 1;
+		const offsetBuffer = Buffer.alloc(INT48_SIZE * 2);
+		offsetBuffer.writeUIntLE(mapOffset, 0, INT48_SIZE);
+		offsetBuffer.writeUIntLE(fileOffset + wayOffsetStart, INT48_SIZE, INT48_SIZE);
+		await writeAndWait(geoFileStream, offsetBuffer);
+		logProgressMsg(
+			"Element geometry file writing: " + thingsWritten + "/" + thingsToWrite + " (" +
+			(thingsWritten / thingsToWrite * 100).toFixed(2) +
+			"%)"
+		);
+	}
+	for(const [mapOffset, fileOffset] of relGeoOffsets){
+		thingsWritten += 1;
+		const offsetBuffer = Buffer.alloc(INT48_SIZE * 2);
+		offsetBuffer.writeUIntLE(mapOffset, 0, INT48_SIZE);
+		offsetBuffer.writeUIntLE(fileOffset + relOffsetStart, INT48_SIZE, INT48_SIZE);
+		await writeAndWait(geoFileStream, offsetBuffer);
+		logProgressMsg(
+			"Element geometry file writing: " + thingsWritten + "/" + thingsToWrite + " (" +
+			(thingsWritten / thingsToWrite * 100).toFixed(2) +
+			"%)"
+		);
+	}
+	let readStream = fs.createReadStream(wayGeoPath);
+	readStream.pipe(geoFileStream, {end: true});
+	await new Promise(resolve => readStream.once("close", resolve));
+	thingsWritten += 1;
+	logProgressMsg(
+		"Element geometry file writing: " + thingsWritten + "/" + thingsToWrite + " (" +
+		(thingsWritten / thingsToWrite * 100).toFixed(2) +
+		"%)"
+	);
+	readStream = fs.createReadStream(relGeoPath);
+	readStream.pipe(geoFileStream);
+	await new Promise(resolve => readStream.once("close", resolve));
+	console.log("Element geometry file writing: " + thingsToWrite + "/" + thingsToWrite + " (100%)");
+};
 (async() => {
 	try{
 		const {size: mapSize} = await fsp.stat(mapPath);
@@ -652,6 +1089,9 @@ const parentIndex = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		}
 		if(options.parentIndex){
 			await parentIndex(mapPath, mapSize, tmpDir, firstOffsetWithNonNode, mapFileHashPromise);
+		}
+		if(options.geometry){
+			await geometryMap(mapPath, mapSize, tmpDir, firstOffsetWithNonNode, mapFileHashPromise);
 		}
 		await fsp.rm(tmpDir, {recursive: true, force: true});
 		await mapReader.stop();

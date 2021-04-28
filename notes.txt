@@ -7,3 +7,6 @@ Problems I went through:
 		first tried this hypothesis by checking against raw_size
 		note: The multiple levels of compression are insane! DELTA coding INSIDE zlib?
 	mapping parents for every invididual element was a very bad idea
+	
+multipolygon resolving:
+	counter-clockwise for outer, clockwise for inner (holes)

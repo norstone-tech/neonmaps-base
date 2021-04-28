@@ -11,10 +11,12 @@
 		"neonmaps-id-indexer": "./bin/neonmaps-id-indexer.js"
 	},
 	"dependencies": {
-		"pbf": "^3.2.1",
-		"protocol-buffers-schema": "^3.5.1",
+		"@turf/boolean-clockwise": "^6.3.0",
+		"@turf/boolean-contains": "^6.3.0",
+		"binary-search-bounds": "^2.0.5",
 		"commander": "^7.2.0",
-		"binary-search-bounds": "^2.0.5"
+		"pbf": "^3.2.1",
+		"protocol-buffers-schema": "^3.5.1"
 	},
 	"repository": {
 		"type": "git",

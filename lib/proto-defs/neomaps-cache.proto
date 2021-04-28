@@ -46,3 +46,23 @@ message UnpackedElementsCache {
 	repeated UnpackedWay ways = 2;
 	repeated UnpackedRelation relations = 3;
 }
+message GeometryPoints {
+	required bool closed = 1;
+	optional bool inner = 2;
+	repeated sint64 lat = 3; // DELTA coded
+	repeated sint64 lon = 4; // DELTA coded
+}
+message WayGeometry {
+	required int64 id = 1;
+	required GeometryPoints geometry = 2;
+}
+message WayGeometryBlock {
+	repeated WayGeometry geometries = 1;
+}
+message RelationGeometry{
+	required int64 id = 1;
+	repeated GeometryPoints geometry = 2;
+}
+message RelationGeometryBlock{
+	repeated RelationGeometry geometries = 1;
+}

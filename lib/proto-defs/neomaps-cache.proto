@@ -49,8 +49,8 @@ message UnpackedElementsCache {
 message GeometryPoints {
 	required bool closed = 1;
 	optional bool inner = 2;
-	repeated sint64 lat = 3; // DELTA coded
-	repeated sint64 lon = 4; // DELTA coded
+	repeated sint64 lat = 3 [packed=true]; // DELTA coded
+	repeated sint64 lon = 4 [packed=true]; // DELTA coded
 }
 message WayGeometry {
 	required int64 id = 1;

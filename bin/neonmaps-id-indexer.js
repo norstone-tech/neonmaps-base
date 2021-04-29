@@ -826,20 +826,14 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		uniqueNodeIDsInWays.forEach(nodeID => {nodeIDsInWays.push(nodeID);})
 		nodeIDsInWays.sort((a, b) => a - b);
 		uniqueNodeIDsInWays.clear();
-		console.log(nodeIDsInWays, nodeIDsInWays.length);
-		/**@type {Array<Array<number>>} */
-		const nodePosInWays = [];
-		for(let i = 0; i < nodeIDsInWays.length; i += 1){
-			const nodeID = nodeIDsInWays[i];
-			nodePosInWays.push(nodePosResolver.getPosSync(nodeID) ?? await nodePosResolver.getPos(nodeID));
-		}
+		const nodePosInWays = await nodePosResolver.getPos(nodeIDsInWays);
 		console.timeEnd("Node search");
 		console.time("way assembly");
 		for(let i = 0; i < mapData.ways.length; i += 1){
 			const way = mapData.ways[i];
 			const nodesPos = way.nodes.map(nodeID => nodePosInWays[bounds.eq(nodeIDsInWays, nodeID)]);
 			
-			if(nodesPos.includes(undefined)){
+			if(nodesPos.includes(null)){
 				console.error(
 					"WARNING: Way " + way.id + " refers to nodes which don't exist! " +
 					"Geometry will not be included..."
@@ -854,6 +848,9 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			const nodesLast = nodesPos.length - 1;
 			const nodesLen = way.nodes[0] === way.nodes[nodesLast] ? nodesPos.length : nodesLast;
 			for(let ii = 0; ii < nodesLen; ii += 1){
+				if(nodesPos[ii] == null){
+					throw new Error("Couldn't get pos for " + way.nodes[ii]);
+				}
 				const lat = nodesPos[ii][0];
 				const lon = nodesPos[ii][1];
 				encodedLat.push(lat - lastLat);

@@ -66,3 +66,8 @@ message RelationGeometry{
 message RelationGeometryBlock{
 	repeated RelationGeometry geometries = 1;
 }
+message CachedNodePositions{
+	repeated sint64 id = 1 [packed=true]; // DELTA coded
+	repeated sint64 lat = 2 [packed=true]; // DELTA coded
+	repeated sint64 lon = 3 [packed=true]; // DELTA coded
+}

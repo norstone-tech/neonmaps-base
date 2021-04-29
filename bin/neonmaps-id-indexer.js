@@ -2,6 +2,7 @@ const os = require("os");
 const path = require("path");
 const {MapReaderBase} = require("../lib/map-reader-base");
 const {MapReader} = require("../lib/map-reader");
+const {FastNodePositionResolver} = require("../lib/indexer/node-positions");
 const bounds = require("binary-search-bounds");
 const {program} = require('commander');
 const {promises: fsp} = require("fs");
@@ -751,9 +752,12 @@ const getMultipolyGeo = async function(
 };
 
 const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFileHashPromise){
+	const nodePosResolver = new FastNodePositionResolver(tmpDir, mapReader, 1000000, 10);
+	await nodePosResolver.createNodePosFiles();
+
 	let relativeFileOffset = 0;
 	const relativeEndOffset = mapSize - fileOffset;
-	const cachedMapReader = new MapReader(mapPath, 50, 300);
+	const cachedMapReader = new MapReader(mapPath, 10, 10);
 	await cachedMapReader.init();
 	/**@type {Map<number, number?} */
 	const wayGeoOffsets = new Map();
@@ -773,6 +777,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		// Not using cachedMapReader because I only want that to cache nodes
 		const rawData = await mapReader.readMapSegment(fileOffset);
 		const mapData = MapReaderBase.decodeRawData(rawData);
+		/*
 		console.time("Node search start");
 		const nodeListList = // await Promise.all(
 			mapData.ways.map((way, wayIndex) => 
@@ -790,30 +795,67 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			);
 		//);
 		console.timeEnd("Node search start");
+		*/
+		/*
+		console.time("Node search start");
+		const nodeListList = // await Promise.all(
+			mapData.ways.map((way, wayIndex) => 
+				Promise.all(
+					way.nodes.map(nodeID => nodePosResolver.getPosSync(nodeID) ?? (async () => {
+						await new Promise(resolve => setTimeout(resolve, wayIndex));
+						return nodePosResolver.getPos(nodeID);
+					})())
+				)
+			);
+		//);
+		console.timeEnd("Node search start");
+		*/
+		
+		console.time("Node search");
+		// This is some funky shit right here
+		/**@type {Array<number>} */
+		const nodeIDsInWays = [];
+		/**@type {Set<number>} */
+		const uniqueNodeIDsInWays = new Set();
+		for(let i = 0; i < mapData.ways.length; i += 1){
+			const way = mapData.ways[i];
+			for(let ii = 0; ii < way.nodes.length; ii += 1){
+				uniqueNodeIDsInWays.add(way.nodes[ii]);
+			}
+		}
+		uniqueNodeIDsInWays.forEach(nodeID => {nodeIDsInWays.push(nodeID);})
+		nodeIDsInWays.sort((a, b) => a - b);
+		uniqueNodeIDsInWays.clear();
+		console.log(nodeIDsInWays, nodeIDsInWays.length);
+		/**@type {Array<Array<number>>} */
+		const nodePosInWays = [];
+		for(let i = 0; i < nodeIDsInWays.length; i += 1){
+			const nodeID = nodeIDsInWays[i];
+			nodePosInWays.push(nodePosResolver.getPosSync(nodeID) ?? await nodePosResolver.getPos(nodeID));
+		}
+		console.timeEnd("Node search");
 		console.time("way assembly");
 		for(let i = 0; i < mapData.ways.length; i += 1){
 			const way = mapData.ways[i];
-			const nodeResultStart = Date.now();
-			const nodes = await nodeListList[i];
-			const nodeResultTime = Date.now() - nodeResultStart;
-			if(nodeResultTime > 75){
-				console.log(nodeResultTime + "ms for resolving nodes for way " + way.id)
-			}
-			if(nodes.includes(null)){
+			const nodesPos = way.nodes.map(nodeID => nodePosInWays[bounds.eq(nodeIDsInWays, nodeID)]);
+			
+			if(nodesPos.includes(undefined)){
 				console.error(
 					"WARNING: Way " + way.id + " refers to nodes which don't exist! " +
 					"Geometry will not be included..."
 				);
+				//continue;
 			}
+			
 			const encodedLat = [];
 			const encodedLon = [];
 			let lastLat = 0;
 			let lastLon = 0;
-			const nodesLast = nodes.length - 1;
-			const nodesLen = way.nodes[0] === way.nodes[nodesLast] ? nodes.length : nodesLast;
+			const nodesLast = nodesPos.length - 1;
+			const nodesLen = way.nodes[0] === way.nodes[nodesLast] ? nodesPos.length : nodesLast;
 			for(let ii = 0; ii < nodesLen; ii += 1){
-				const lat = nodes[ii][0];
-				const lon = nodes[ii][1];
+				const lat = nodesPos[ii][0];
+				const lon = nodesPos[ii][1];
 				encodedLat.push(lat - lastLat);
 				encodedLon.push(lon - lastLon);
 				lastLat = lat;

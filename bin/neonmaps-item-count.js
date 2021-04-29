@@ -26,11 +26,25 @@ const logProgressMsg = function(...msg){
 		let nodeCount = 0;
 		let wayCount = 0;
 		let relationCount = 0;
+		let segmentCount = 0;
+		let nodeSegmentCount = 0;
+		let waySegmentCount = 0;
+		let relationSegmentCount = 0;
 		while(fileOffset < mapSize){
 			/**@type {import("../lib/map-reader-base").OSMData} */
 			const rawData = await mapReader.readMapSegment(fileOffset);
+			segmentCount += 1;
 			for(let i = 0; i < rawData.primitivegroup.length; i += 1){
 				const rawGroup = rawData.primitivegroup[i];
+				if(rawGroup.dense || rawGroup.nodes.length){
+					nodeSegmentCount += 1;
+				}
+				if(rawGroup.ways.length){
+					waySegmentCount += 1;
+				}
+				if(rawGroup.relations.length){
+					relationSegmentCount += 1;
+				}
 				nodeCount += rawGroup.nodes.length;
 				if(rawGroup.dense){
 					nodeCount += rawGroup.dense.id.length;
@@ -48,7 +62,11 @@ const logProgressMsg = function(...msg){
 		console.log({
 			nodeCount,
 			wayCount,
-			relationCount
+			relationCount,
+			segmentCount,
+			nodeSegmentCount,
+			waySegmentCount,
+			relationSegmentCount
 		});
 		await mapReader.stop();
 	}catch(ex){

@@ -612,7 +612,7 @@ const matchPointOrderToRingType = function(/**@type {InternalPolygon}*/ poly){
 	const points = poly.lat.map((v, i) => [v, poly.lon[i]]);
 	points.push(points[0]);
 	// inner rings (holes) should be clockwise
-	if(geoIsClockwise(turf.lineString(points)) != inner){
+	if(geoIsClockwise(turf.lineString(points)) != poly.inner){
 		poly.lat.reverse();
 		poly.lon.reverse();
 	}
@@ -636,28 +636,28 @@ const addPointsToIncompletePoly = function(
 		if(p.lat[0] == pointsToAdd.lat[0] && p.lon[0] == pointsToAdd.lon[0]){
 			const latToAdd = pointsToAdd.lat.reverse();
 			latToAdd.pop();
-			const lonToAdd = pointsToAdd.lat.reverse();
+			const lonToAdd = pointsToAdd.lon.reverse();
 			lonToAdd.pop();
 			p.lat.unshift(...latToAdd);
 			p.lon.unshift(...lonToAdd);
 		}else if(p.lat[0] == pointsToAdd.lat[lastToAdd] && p.lon[0] == pointsToAdd.lon[lastToAdd]){
 			const latToAdd = pointsToAdd.lat;
 			latToAdd.pop();
-			const lonToAdd = pointsToAdd.lat;
+			const lonToAdd = pointsToAdd.lon;
 			lonToAdd.pop();
 			p.lat.unshift(...latToAdd);
 			p.lon.unshift(...lonToAdd);
 		}else if(p.lat[last] == pointsToAdd.lat[lastToAdd] && p.lon[last] == pointsToAdd.lon[lastToAdd]){
 			const latToAdd = pointsToAdd.lat.reverse();
 			latToAdd.shift();
-			const lonToAdd = pointsToAdd.lat.reverse();
+			const lonToAdd = pointsToAdd.lon.reverse();
 			lonToAdd.shift();
 			p.lat.push(...latToAdd);
 			p.lon.push(...lonToAdd);
 		}else if(p.lat[last] == pointsToAdd.lat[0] && p.lon[last] == pointsToAdd.lon[0]){
 			const latToAdd = pointsToAdd.lat;
 			latToAdd.shift();
-			const lonToAdd = pointsToAdd.lat;
+			const lonToAdd = pointsToAdd.lon;
 			lonToAdd.shift();
 			p.lat.push(...latToAdd);
 			p.lon.push(...lonToAdd);
@@ -846,7 +846,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			let lastLat = 0;
 			let lastLon = 0;
 			const nodesLast = nodesPos.length - 1;
-			const nodesLen = way.nodes[0] === way.nodes[nodesLast] ? nodesPos.length : nodesLast;
+			const nodesLen = way.nodes[0] === way.nodes[nodesLast] ? nodesLast : nodesPos.length;
 			for(let ii = 0; ii < nodesLen; ii += 1){
 				if(nodesPos[ii] == null){
 					throw new Error("Couldn't get pos for " + way.nodes[ii]);
@@ -860,7 +860,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			}
 			wayGeometries.push({
 				id: way.id,
-				geomtery: {
+				geometry: {
 					closed: nodesLen == nodesLast,
 					lat: encodedLat,
 					lon: encodedLon
@@ -883,7 +883,9 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			const relation = mapData.relations[i];
 			const relationType = relation.tags.get("type");
 			if(relationType == "multipolygon" || relationType == "boundary"){
+				console.time("Multipolygon resolving");
 				const geometry = await getMultipolyGeo(relation, wayGeoFile, cachedMapReader, wayGeoOffsets);
+				console.timeEnd("Multipolygon resolving");
 				if(geometry != null){
 					relationGeometries.push({
 						id: relation.id,
@@ -910,19 +912,26 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 				const incompletePolys = new Set();
 				/**@type {Array<InternalPolygon>} */
 				const geometry = [];
+				console.time("Route resolving");
 				for(let i = 0; i < members.length; i += 1){
-					const wayPoints = await getCachedWayPoints(fd, cachedMapReader, wayGeoOffsets, members[i].id);
+					const wayPoints = await getCachedWayPoints(
+						wayGeoFile,
+						cachedMapReader,
+						wayGeoOffsets,
+						members[i].id
+					);
 					if(wayPoints == null){
 						continue;
 					}
 					addPointsToIncompletePoly(incompletePolys, geometry, wayPoints);
 				}
+				console.timeEnd("Route resolving");
 				geometry.push(...incompletePolys);
 				for(let i = 0; i < geometry.length; i += 1){
 					geometry[i].lat = deltaEncodeNums(geometry[i].lat);
 					geometry[i].lon = deltaEncodeNums(geometry[i].lon);
 				}
-				if(completePolys.length){
+				if(geometry.length){
 					relationGeometries.push({
 						id: relation.id,
 						geometry

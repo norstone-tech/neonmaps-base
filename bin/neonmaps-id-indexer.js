@@ -620,7 +620,8 @@ const matchPointOrderToRingType = function(/**@type {InternalPolygon}*/ poly){
 const addPointsToIncompletePoly = function(
 	/**@type {Set<InternalPolygon>}*/ incompletePolys,
 	/**@type {Array<InternalPolygon>}*/ completePolys,
-	/**@type {InternalPolygon}*/ pointsToAdd
+	/**@type {InternalPolygon}*/ pointsToAdd,
+	/**@type {boolean}*/ internal
 ){
 	if(pointsToAdd.closed){
 		completePolys.push(pointsToAdd);
@@ -668,11 +669,15 @@ const addPointsToIncompletePoly = function(
 		break;
 	}
 	if(poly == null){
-		poly = {
-			closed: false,
-			lat: pointsToAdd.lat,
-			lon: pointsToAdd.lon
-		};
+		if(internal){
+			poly = pointsToAdd;
+		}else{
+			poly = {
+				closed: false,
+				lat: pointsToAdd.lat,
+				lon: pointsToAdd.lon
+			};
+		}
 		incompletePolys.add(poly);
 	}else{
 		const last = poly.lat.length - 1;
@@ -683,6 +688,10 @@ const addPointsToIncompletePoly = function(
 			incompletePolys.delete(poly);
 			completePolys.push(poly);
 			return poly;
+		}else{
+			// Check to see if we connect even more lines together
+			incompletePolys.delete(poly); // It's gonna probably get re-added anyway
+			return addPointsToIncompletePoly(incompletePolys, completePolys, poly, true);
 		}
 	}
 }
@@ -811,7 +820,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		console.timeEnd("Node search start");
 		*/
 		
-		console.time("Node search");
+		// console.time("Node search");
 		// This is some funky shit right here
 		/**@type {Array<number>} */
 		const nodeIDsInWays = [];
@@ -827,8 +836,8 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		nodeIDsInWays.sort((a, b) => a - b);
 		uniqueNodeIDsInWays.clear();
 		const nodePosInWays = await nodePosResolver.getPos(nodeIDsInWays);
-		console.timeEnd("Node search");
-		console.time("way assembly");
+		// console.timeEnd("Node search");
+		// console.time("way assembly");
 		for(let i = 0; i < mapData.ways.length; i += 1){
 			const way = mapData.ways[i];
 			const nodesPos = way.nodes.map(nodeID => nodePosInWays[bounds.eq(nodeIDsInWays, nodeID)]);
@@ -867,7 +876,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 				}
 			});
 		}
-		console.timeEnd("way assembly");
+		// console.timeEnd("way assembly");
 		if(wayGeometries.length){
 			const pbf = new Pbf();
 			WayGeometryBlockParser.write({geometries: wayGeometries}, pbf);
@@ -883,9 +892,9 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			const relation = mapData.relations[i];
 			const relationType = relation.tags.get("type");
 			if(relationType == "multipolygon" || relationType == "boundary"){
-				console.time("Multipolygon resolving");
+				// console.time("Multipolygon resolving");
 				const geometry = await getMultipolyGeo(relation, wayGeoFile, cachedMapReader, wayGeoOffsets);
-				console.timeEnd("Multipolygon resolving");
+				// console.timeEnd("Multipolygon resolving");
 				if(geometry != null){
 					relationGeometries.push({
 						id: relation.id,
@@ -912,7 +921,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 				const incompletePolys = new Set();
 				/**@type {Array<InternalPolygon>} */
 				const geometry = [];
-				console.time("Route resolving");
+				// console.time("Route resolving");
 				for(let i = 0; i < members.length; i += 1){
 					const wayPoints = await getCachedWayPoints(
 						wayGeoFile,
@@ -925,7 +934,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 					}
 					addPointsToIncompletePoly(incompletePolys, geometry, wayPoints);
 				}
-				console.timeEnd("Route resolving");
+				// console.timeEnd("Route resolving");
 				geometry.push(...incompletePolys);
 				for(let i = 0; i < geometry.length; i += 1){
 					geometry[i].lat = deltaEncodeNums(geometry[i].lat);

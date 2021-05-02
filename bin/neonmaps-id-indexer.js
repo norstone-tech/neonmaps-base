@@ -695,6 +695,30 @@ const addPointsToIncompletePoly = function(
 		}
 	}
 }
+// This assumes there are no intersections, no filled polygons overlap, and "outer" vs "inner" polygons are defined correctly
+const groupHolesWithPolygons = function(/**@type {Array<turf.Feature<turf.Polygon>>}*/ polys){
+	/* First we assign all poly's a "depth" of how "inner" they are, we could probably sort this first to make it more
+	   performant, but this is good enough for now... even if it is O(n**2) */
+	/**@type {Array<Array<turf.Feature<turf.Polygon>>>} */
+	const polygonByDepth = [];
+	for(let i = 0; i < polys.length; i += 1){
+		let depth = 0;
+		for(let ii = 0; ii < polys.length; ii += 1){
+			if(ii == i){
+				continue;
+			}
+			if(geoContains(polys[ii], polys[i])){
+				depth += 1;
+			}
+		}
+		polys[i].properties.depth = depth;
+		if(polygonByDepth[depth] == null){
+			polygonByDepth[depth] = [];
+		}
+		polygonByDepth[depth].push(polys[i]);
+	}
+	// TODO: Incomplete
+}
 const getMultipolyGeo = async function(
 	/**@type {import("../lib/map-reader-base").OSMRelation}*/ relation,
 	/**@type {fsp.FileHandle}*/ fd,
@@ -732,19 +756,14 @@ const getMultipolyGeo = async function(
 	const completePolyTurf = completePolys.map(poly => {
 		const coords = poly.lat.map((lat, i) => [lat, poly.lon[i]]);
 		coords.push(coords[0]);
-		return turf.polygon([coords], {original: poly});
+		return turf.polygon([coords], {original: poly, depth: 0});
 	});
-	// Put islands and "inner" rings at the end of the array
-	completePolyTurf.sort((a, b) => {
-		if(geoContains(a, b)){
-			return -1;
-		}
-		if(geoContains(b, a)){
-			return 1;
-		}
-		return 0;
-	});
+
+	// This makes converting to GEOJSON multipolygons easier later on
+
+
 	for(let i = 0; i < completePolys.length; i += 1){
+		completePolyTurf[i].properties.original.inner;
 		const poly = completePolyTurf[i].properties.original;
 		poly.lat = deltaEncodeNums(poly.lat);
 		poly.lon = deltaEncodeNums(poly.lon);

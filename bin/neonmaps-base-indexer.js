@@ -17,9 +17,7 @@ const Pbf = require("pbf");
 const {
 	WayGeometryBlock: WayGeometryBlockParser,
 	RelationGeometryBlock: RelationGeometryBlockParser
-} = protoCompile(
-	parseProtoSchema(fs.readFileSync(path.resolve(__dirname, "..", "lib", "proto-defs", "neomaps-cache.proto")))
-);
+} = require("../lib/proto-defs");
 const OSM_NODE = 0;
 const OSM_WAY = 1;
 const OSM_RELATION = 2;

@@ -8,7 +8,7 @@
 	"license": "Artistic-2.0",
 	"main": "index.js",
 	"bin": {
-		"neonmaps-id-indexer": "./bin/neonmaps-id-indexer.js"
+		"neonmaps-base-indexer": "./bin/neonmaps-base-indexer.js"
 	},
 	"dependencies": {
 		"@turf/boolean-clockwise": "^6.3.0",

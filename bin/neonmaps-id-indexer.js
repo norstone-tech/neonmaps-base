@@ -717,7 +717,25 @@ const groupHolesWithPolygons = function(/**@type {Array<turf.Feature<turf.Polygo
 		}
 		polygonByDepth[depth].push(polys[i]);
 	}
-	// TODO: Incomplete
+	if((polygonByDepth.length % 2) != 0){
+		polygonByDepth.push([]);
+	}
+	polys.length = 0;
+	for(let i = 0; i < polygonByDepth.length; i += 2){
+		const outerPolys = polygonByDepth[i];
+		const innerPolys = polygonByDepth[i + 1];
+		for(let ii = 0; ii < outerPolys.length; ii += 1){
+			const outerPoly = outerPolys[ii];
+			polys.push(outerPoly);
+			for(let iii = 0; iii < innerPolys.length; iii += 1){
+				const innerPoly = innerPolys[iii];
+				if(geoContains(outerPoly, innerPoly)){
+					polys.push(innerPoly);
+				}
+			}
+		}
+	}
+	return polys;
 }
 const getMultipolyGeo = async function(
 	/**@type {import("../lib/map-reader-base").OSMRelation}*/ relation,
@@ -758,11 +776,9 @@ const getMultipolyGeo = async function(
 		coords.push(coords[0]);
 		return turf.polygon([coords], {original: poly, depth: 0});
 	});
-
-	// This makes converting to GEOJSON multipolygons easier later on
-
-
-	for(let i = 0; i < completePolys.length; i += 1){
+	// This makes converting to GeoJSON multipolygons easier later on
+	groupHolesWithPolygons(completePolyTurf);
+	for(let i = 0; i < completePolyTurf.length; i += 1){
 		completePolyTurf[i].properties.original.inner;
 		const poly = completePolyTurf[i].properties.original;
 		poly.lat = deltaEncodeNums(poly.lat);

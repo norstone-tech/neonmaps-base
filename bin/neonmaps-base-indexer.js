@@ -609,7 +609,7 @@ const matchPointOrderToRingType = function(/**@type {InternalPolygon}*/ poly){
 	if(poly.inner == null){
 		return;
 	}
-	const points = poly.lat.map((v, i) => [v, poly.lon[i]]);
+	const points = poly.lat.map((v, i) => [poly.lon[i], v]);
 	points.push(points[0]);
 	// inner rings (holes) should be clockwise
 	if(geoIsClockwise(turf.lineString(points)) != poly.inner){
@@ -772,7 +772,7 @@ const getMultipolyGeo = async function(
 		}
 	}
 	const completePolyTurf = completePolys.map(poly => {
-		const coords = poly.lat.map((lat, i) => [lat, poly.lon[i]]);
+		const coords = poly.lat.map((lat, i) => [poly.lon[i], lat]);
 		coords.push(coords[0]);
 		return turf.polygon([coords], {original: poly, depth: 0});
 	});

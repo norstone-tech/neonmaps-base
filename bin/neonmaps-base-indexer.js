@@ -12,7 +12,7 @@ const crypto = require("crypto");
 const turf = require("@turf/helpers");
 const {default: geoIsClockwise} = require("@turf/boolean-clockwise");
 const {default: geoContains} = require("@turf/boolean-contains");
-const geoSimplify = require("@turf/simplify"); // Why isn't this like the ones above? I'll never know...
+const {default: geoArea} = require("@turf/area");
 const Pbf = require("pbf");
 const {
 	WayGeometryBlock: WayGeometryBlockParser,
@@ -633,102 +633,55 @@ const addPointsToIncompletePoly = function(
 		}
 	}
 }
-const geoContainsSimplified = function(
-	/**@type {turf.Feature<turf.Polygon>}*/ poly1,
-	/**@type {turf.Feature<turf.Polygon>}*/ poly2
-){
-	return geoContains(poly1.properties.simplified ?? poly1, poly2.properties.simplified ?? poly2);
-}
 // This assumes there are no intersections, no filled polygons overlap, and "outer" vs "inner" polygons are defined correctly
 const groupHolesWithPolygons = function(/**@type {Array<turf.Feature<turf.Polygon>>}*/ polys, /**@type {number}*/ relID){
-	let simplified = false;
+	/**@type {Array<turf.Feature<turf.Polygon>>} */
+	const outerPolys = [];
+	/**@type {Array<turf.Feature<turf.Polygon>>} */
+	const innerPolys = [];
 	for(let i = 0; i < polys.length; i += 1){
-		const poly = polys[i];
-		if(options.simplification && poly.geometry.coordinates[0].length > 500){
-			simplified = true;
-			poly.properties.simplified = geoSimplify(poly, {
-				// This is arbetrary, quick way for "the more complex, the more we should simpligy"
-				tolerance: poly.geometry.coordinates[0].length * 3,
-				highQuality: true,
-				mutate: false
-			});
-		}
-	}
-	/* First we assign all poly's a "depth" of how "inner" they are, we could probably sort this first to make it more
-	   performant, but this is good enough for now... even if it is O(n**2) */
-	/**@type {Array<Array<turf.Feature<turf.Polygon>>>} */
-	const polygonByDepth = [];
-	for(let i = 0; i < polys.length; i += 1){
-		let depth = 0;
-		for(let ii = 0; ii < polys.length; ii += 1){
-			if(ii == i){
-				continue;
-			}
-			if(geoContainsSimplified(polys[ii], polys[i])){
-				depth += 1;
-			}
-		}
-		if(polys[i].properties.original.inner != ((depth % 2) == 1)){
-			console.error("WARNING! Relation " + relID + " appears to have incorrectly defined member roles!");
-			if(simplified){
-				console.error(
-					"    Take the above warning with a grain of salt, geometry has been simplified while sorting"
-				);
-			}
-			if(depth > 0){
-				depth -= 1;
-			}else{
-				depth += 1;
-			}
-		}
-		polys[i].properties.depth = depth;
-		if(polygonByDepth[depth] == null){
-			polygonByDepth[depth] = [];
-		}
-		polygonByDepth[depth].push(polys[i]);
-	}
-	if((polygonByDepth.length % 2) != 0){
-		polygonByDepth.push([]);
-	}
-	polys.length = 0;
-	if(polygonByDepth.length == 2 && (polygonByDepth[0] == null || polygonByDepth[0].length == 1)){
-		// There's only one "outer" shape, checking everything is redundant
-		if(polygonByDepth[0] == null){
-			console.error("WARNING! Relation " + relID + " has no outer shapes!");
+		if(polys[i].properties.original.inner){
+			innerPolys.push(polys[i]);
 		}else{
-			polys.push(polygonByDepth[0][0]);
+			outerPolys.push(polys[i]);
 		}
-		for(let i = 0; i < polygonByDepth[1].length; i += 1){
-			polys.push(polygonByDepth[1][i]);
+	}
+	if(outerPolys.length <= 1){
+		// First check if there are even multiple outers to group
+		polys.length = 0;
+		if(outerPolys.length == 0){
+			console.error("WARNING! relation " + relID + " has no outer members!");
+		}else{
+			polys.push(outerPolys[0]);
+		}
+		for(let i = 0; i < innerPolys.length; i += 1){
+			polys.push(innerPolys[i]);
 		}
 		return polys;
 	}
-	for(let i = 0; i < polygonByDepth.length; i += 2){
-		const outerPolys = polygonByDepth[i];
-		const innerPolys = polygonByDepth[i + 1];
-		if(outerPolys == null){
-			console.error("WARNING! Relation " + relID + " appears to have overlapping inner role members!");
-			if(simplified){
-				console.error(
-					"    Take the above warning with a grain of salt, geometry has been simplified while sorting"
-				);
+	for(let i = 0; i < polys.length; i += 1){
+		polys[i].properties.area = geoArea(polys[i]);
+	}
+	polys.length = 0;
+	outerPolys.sort((a, b) => a.properties.area - b.properties.area);
+	innerPolys.sort((a, b) => a.properties.area - b.properties.area);
+	for(let i = 0; i < outerPolys.length; i += 1){
+		const outerPoly = outerPolys[i];
+		polys.push(outerPoly);
+		for(let ii = 0; ii < innerPolys.length; ii += 1){
+			const innerPoly = innerPolys[ii];
+			if(innerPoly.properties.area > outerPoly.properties.area){
+				break;
 			}
-			for(let ii = 0; ii < innerPolys.length; ii += 1){
-				polys.push(innerPolys[ii]);
-			}
-		}else{
-			for(let ii = 0; ii < outerPolys.length; ii += 1){
-				const outerPoly = outerPolys[ii];
-				polys.push(outerPoly);
-				for(let iii = 0; iii < innerPolys.length; iii += 1){
-					const innerPoly = innerPolys[iii];
-					if(geoContainsSimplified(outerPoly, innerPoly)){
-						polys.push(innerPoly);
-					}
-				}
+			if(geoContains(outerPoly, innerPoly)){
+				innerPolys.splice(ii, 1);
+				polys.push(innerPoly);
+				ii -= 1;
 			}
 		}
-
+	}
+	if(innerPolys.length > 0){
+		console.error("WARNING! relation " + relID + " has inner members with no outer memebrs!");
 	}
 	return polys;
 }

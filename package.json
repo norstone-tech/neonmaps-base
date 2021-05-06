@@ -11,6 +11,7 @@
 		"neonmaps-base-indexer": "./bin/neonmaps-base-indexer.js"
 	},
 	"dependencies": {
+		"@turf/area": "^6.3.0",
 		"@turf/boolean-clockwise": "^6.3.0",
 		"@turf/boolean-contains": "^6.3.0",
 		"@turf/helpers": "^6.3.0",

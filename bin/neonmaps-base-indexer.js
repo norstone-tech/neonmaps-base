@@ -949,7 +949,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 	const relOffsetStart = wayOffsetStart + wayGeoOffsets.size * 2 * INT48_SIZE;
 	offsetNumBuffer.writeUIntLE(relOffsetStart, INT48_SIZE, INT48_SIZE);
 	const relOffsetEnd = relOffsetStart + relGeoOffsets.size * 2 * INT48_SIZE;
-	offsetNumBuffer.writeUIntLE(relOffsetEnd, INT48_SIZE, INT48_SIZE);
+	offsetNumBuffer.writeUIntLE(relOffsetEnd, INT48_SIZE * 2, INT48_SIZE);
 
 	geoFileStream.write(offsetNumBuffer);
 	relGeoStream.end();
@@ -961,7 +961,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		thingsWritten += 1;
 		const offsetBuffer = Buffer.alloc(INT48_SIZE * 2);
 		offsetBuffer.writeUIntLE(mapOffset, 0, INT48_SIZE);
-		offsetBuffer.writeUIntLE(fileOffset + wayOffsetStart, INT48_SIZE, INT48_SIZE);
+		offsetBuffer.writeUIntLE(fileOffset + relOffsetEnd, INT48_SIZE, INT48_SIZE);
 		await writeAndWait(geoFileStream, offsetBuffer);
 		logProgressMsg(
 			"Element geometry file writing: " + thingsWritten + "/" + thingsToWrite + " (" +
@@ -969,11 +969,12 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			"%)"
 		);
 	}
+	const {size: wayGeoSize} = await fsp.stat(wayGeoPath);
 	for(const [mapOffset, fileOffset] of relGeoOffsets){
 		thingsWritten += 1;
 		const offsetBuffer = Buffer.alloc(INT48_SIZE * 2);
 		offsetBuffer.writeUIntLE(mapOffset, 0, INT48_SIZE);
-		offsetBuffer.writeUIntLE(fileOffset + relOffsetStart, INT48_SIZE, INT48_SIZE);
+		offsetBuffer.writeUIntLE(fileOffset + relOffsetEnd + wayGeoSize, INT48_SIZE, INT48_SIZE);
 		await writeAndWait(geoFileStream, offsetBuffer);
 		logProgressMsg(
 			"Element geometry file writing: " + thingsWritten + "/" + thingsToWrite + " (" +

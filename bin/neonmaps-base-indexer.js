@@ -650,7 +650,7 @@ const groupHolesWithPolygons = function(/**@type {Array<turf.Feature<turf.Polygo
 		// First check if there are even multiple outers to group
 		polys.length = 0;
 		if(outerPolys.length == 0){
-			console.error("WARNING! relation " + relID + " has no outer members!");
+			console.error("WARNING: Relation " + relID + " has no outer members!");
 		}else{
 			polys.push(outerPolys[0]);
 		}
@@ -681,7 +681,7 @@ const groupHolesWithPolygons = function(/**@type {Array<turf.Feature<turf.Polygo
 		}
 	}
 	if(innerPolys.length > 0){
-		console.error("WARNING! relation " + relID + " has inner members with no outer memebrs!");
+		console.error("WARNING: Relation " + relID + " has inner members with no outer memebrs!");
 	}
 	return polys;
 }
@@ -841,7 +841,6 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		}
 
 		// More funky shit here
-		console.time("relation way search");
 		/**@type {Array<number>} */
 		const wayIDsInRels = [];
 		/**@type {Set<number>} */
@@ -858,15 +857,11 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		wayIDsInRels.sort((a, b) => a - b);
 		uniqueWayIDsInRels.clear();
 		await tempWayFinder.prepareWayGeometries(wayIDsInRels);
-		console.timeEnd("relation way search");
-		console.time("relation assembly");
 		for(let i = 0; i < mapData.relations.length; i += 1){
 			const relation = mapData.relations[i];
 			const relationType = relation.tags.get("type");
 			if(relationType == "multipolygon" || relationType == "boundary"){
-				// console.time("Multipolygon resolving");
 				const geometry = getMultipolyGeo(relation, tempWayFinder);
-				// console.timeEnd("Multipolygon resolving");
 				if(geometry != null){
 					relationGeometries.push({
 						id: relation.id,
@@ -893,7 +888,6 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 				const incompletePolys = new Set();
 				/**@type {Array<InternalPolygon>} */
 				const geometry = [];
-				// console.time("Route resolving");
 				for(let i = 0; i < members.length; i += 1){
 					const wayPoints = tempWayFinder.getGeometry(members[i].id);
 					if(wayPoints == null){
@@ -901,7 +895,6 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 					}
 					addPointsToIncompletePoly(incompletePolys, geometry, wayPoints);
 				}
-				// console.timeEnd("Route resolving");
 				geometry.push(...incompletePolys);
 				for(let i = 0; i < geometry.length; i += 1){
 					// Gotta copy to a new object, otherwise other relations may use the mutated result
@@ -921,7 +914,6 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 				}
 			}
 		}
-		console.timeEnd("relation assembly");
 		if(relationGeometries.length){
 			const pbf = new Pbf();
 			RelationGeometryBlockParser.write({geometries: relationGeometries}, pbf);

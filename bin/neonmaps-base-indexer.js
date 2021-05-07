@@ -983,7 +983,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		);
 	}
 	let readStream = fs.createReadStream(wayGeoPath);
-	readStream.pipe(geoFileStream, {end: true});
+	readStream.pipe(geoFileStream, {end: false});
 	await new Promise(resolve => readStream.once("close", resolve));
 	thingsWritten += 1;
 	logProgressMsg(

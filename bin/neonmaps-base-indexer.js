@@ -752,8 +752,6 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 
 	let relativeFileOffset = 0;
 	const relativeEndOffset = mapSize - fileOffset;
-	const indexReader = new OSMElementIDIndexReader(mapPath, mapFileHashPromise);
-	await indexReader.init();
 
 	/**@type {Map<number, number>} */
 	const wayGeoOffsets = new Map();
@@ -767,13 +765,15 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 	const wayGeoFile = await fsp.open(wayGeoPath, "w+");
 	const relGeoStream = fs.createWriteStream(relGeoPath);
 
-	const tempWayFinder = new TempWayGeoFinder(wayGeoFile, indexReader.wayIndex, wayGeoOffsets);
+	const tempWayFinder = new TempWayGeoFinder(wayGeoFile, wayGeoOffsets);
 
 	while(fileOffset < mapSize){
 		const wayGeometries = [];
 		const relationGeometries = [];
 		const rawData = await mapReader.readMapSegment(fileOffset);
 		const mapData = MapReaderBase.decodeRawData(rawData);
+		const firstWayID = mapData.ways.length ? mapData.ways[0].id : -1;
+		const firstRelID = mapData.relations.length ? mapData.relations[0].id : -1;
 
 		// This is some funky shit right here
 		/**@type {Array<number>} */
@@ -834,7 +834,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			WayGeometryBlockParser.write({geometries: wayGeometries}, pbf);
 			const pbfBuf = pbf.finish();
 			const geoBuf = Buffer.concat([Buffer.allocUnsafe(INT32_SIZE), pbfBuf]);
-			wayGeoOffsets.set(fileOffset, curWayGeoOffset);
+			wayGeoOffsets.set(firstWayID, curWayGeoOffset);
 			geoBuf.writeUInt32LE(pbfBuf.length);
 			wayGeoFile.write(geoBuf, 0, geoBuf.length, curWayGeoOffset);
 			curWayGeoOffset += geoBuf.length;
@@ -919,7 +919,7 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 			RelationGeometryBlockParser.write({geometries: relationGeometries}, pbf);
 			const pbfBuf = pbf.finish();
 			const geoBuf = Buffer.concat([Buffer.allocUnsafe(INT32_SIZE), pbfBuf]);
-			relGeoOffsets.set(fileOffset, curRelGeoOffset);
+			relGeoOffsets.set(firstRelID, curRelGeoOffset);
 			geoBuf.writeUInt32LE(pbfBuf.length);
 			await writeAndWait(relGeoStream, geoBuf);
 			curRelGeoOffset += geoBuf.length;
@@ -935,12 +935,11 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 	console.log("Element geometry resolving: " + relativeEndOffset + "/" + relativeEndOffset + " (100%)");
 	const closePromise = Promise.all([
 		new Promise(resolve => relGeoStream.once("close", resolve)),
-		wayGeoFile.close(),
-		indexReader.stop()
+		wayGeoFile.close()
 	]);
 	const mapName = mapPath.substring(mapPath.lastIndexOf(path.sep) + 1, mapPath.length - ".osm.pbf".length);
 	const geoFileStream = fs.createWriteStream(path.resolve(mapPath, "..", mapName + ".neonmaps.geometry"));
-	const fileMagic = "neonmaps.geometry\0";
+	const fileMagic = "neonmaps.geometry\x01";
 	geoFileStream.write(fileMagic); // NUL is the version number, which is now 0.
 	geoFileStream.write(await mapFileHashPromise);
 	const offsetNumBuffer = Buffer.allocUnsafe(INT48_SIZE * 3);
@@ -957,10 +956,10 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 	let thingsWritten = 0;
 	const thingsToWrite = wayGeoOffsets.size + relGeoOffsets.size + 2;
 	console.log("Element geometry file writing: 0/" + thingsToWrite + " (0%)");
-	for(const [mapOffset, fileOffset] of wayGeoOffsets){
+	for(const [firstWayID, fileOffset] of wayGeoOffsets){
 		thingsWritten += 1;
 		const offsetBuffer = Buffer.alloc(INT48_SIZE * 2);
-		offsetBuffer.writeUIntLE(mapOffset, 0, INT48_SIZE);
+		offsetBuffer.writeUIntLE(firstWayID, 0, INT48_SIZE);
 		offsetBuffer.writeUIntLE(fileOffset + relOffsetEnd, INT48_SIZE, INT48_SIZE);
 		await writeAndWait(geoFileStream, offsetBuffer);
 		logProgressMsg(
@@ -970,10 +969,10 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 		);
 	}
 	const {size: wayGeoSize} = await fsp.stat(wayGeoPath);
-	for(const [mapOffset, fileOffset] of relGeoOffsets){
+	for(const [firstRelID, fileOffset] of relGeoOffsets){
 		thingsWritten += 1;
 		const offsetBuffer = Buffer.alloc(INT48_SIZE * 2);
-		offsetBuffer.writeUIntLE(mapOffset, 0, INT48_SIZE);
+		offsetBuffer.writeUIntLE(firstRelID, 0, INT48_SIZE);
 		offsetBuffer.writeUIntLE(fileOffset + relOffsetEnd + wayGeoSize, INT48_SIZE, INT48_SIZE);
 		await writeAndWait(geoFileStream, offsetBuffer);
 		logProgressMsg(

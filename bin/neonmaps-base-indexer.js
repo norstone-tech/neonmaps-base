@@ -853,10 +853,12 @@ const geometryMap = async function(mapPath, mapSize, tmpDir, fileOffset, mapFile
 				}
 			}
 		}
-		uniqueWayIDsInRels.forEach(wayID => {wayIDsInRels.push(wayID);})
-		wayIDsInRels.sort((a, b) => a - b);
-		uniqueWayIDsInRels.clear();
-		await tempWayFinder.prepareWayGeometries(wayIDsInRels);
+		if(uniqueWayIDsInRels.size > 0){
+			uniqueWayIDsInRels.forEach(wayID => {wayIDsInRels.push(wayID);})
+			wayIDsInRels.sort((a, b) => a - b);
+			uniqueWayIDsInRels.clear();
+			await tempWayFinder.prepareWayGeometries(wayIDsInRels);
+		}
 		for(let i = 0; i < mapData.relations.length; i += 1){
 			const relation = mapData.relations[i];
 			const relationType = relation.tags.get("type");
